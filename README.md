@@ -1,5 +1,12 @@
 # NucleusVM
 
+> **Picking this project up fresh, in a new session?** Read
+> [`PROGRESS.md`](PROGRESS.md) first (current status, what's done, the
+> next concrete task), then [`dev-docs/PLAN.md`](dev-docs/PLAN.md) (full
+> rationale, research findings, phasing, risks — everything behind every
+> design decision below). Those two files are the actual source of truth;
+> this README is just an overview.
+
 A shared, generic bytecode virtual machine core, written in Python, meant
 to be reused as the execution engine for multiple Python-hosted teaching
 languages ([STEPS](https://github.com/CFFinch62/Steps), FragBASIC, and
@@ -33,9 +40,10 @@ module of its own — this repo doesn't know STEPS or FragBASIC exist.
 
 ## Status
 
-Early — Phase 0 (core VM loop, no language compiler yet). See
-`dev-docs/DESIGN.md` for the opcode set and the phased plan this project is
-following.
+Phase 0 done (core VM loop, no language compiler yet) — see
+[`PROGRESS.md`](PROGRESS.md) for what that means concretely and what's
+next. `dev-docs/DESIGN.md` has the opcode set with implementation notes;
+`dev-docs/PLAN.md` has the full phased plan and the research it's based on.
 
 ## Using NucleusVM from a language project
 
