@@ -317,6 +317,126 @@ flagged as of this update — `+`/`^`/`XOR`/`EQV`/`IMP` remain on
 enough in the corpus (the rest) that a dedicated opcode isn't obviously
 justified without more profiling evidence than exists yet.
 
+## Status: Phase 2 (STEPS) first vertical slice, 2026-08-18 (same day, still)
+
+FragBASIC's slice had done its job: correctness and real performance gains
+verified, premise validated. Moved to STEPS per `dev-docs/PLAN.md`'s own
+plan — chosen specifically because its dynamic scoping (each call's scope
+parents on the *caller's live scope*, not its definition site) is the one
+real architectural risk FragBASIC's static/resolved-slot scoping never
+touched. Three parallel research passes against STEPS' actual source and
+its own 100-problem Project Euler corpus (`PROJECT_EULER/my-languages/
+steps_euler/`) grounded a scoped plan before any code was written — full
+findings in the session's plan file; headline ones below.
+
+**A real gap this research caught before writing any compiler code**:
+`vm.py`'s `CALL` handler hardcoded `parent=None` on every new `Frame` —
+never exercised by a real dynamically-scoped compiler before now, so it
+went uncaught since Phase 0. Fixed: `parent=self.frame` (the calling
+frame, at `CALL` time) — exactly the re-parenting STEPS' own
+`push_scope()` does. Verified safe for FragBASIC (full suite + 100-
+solution corpus re-sweep, 56 matches, 0 divergences, identical to before).
+De-risked properly, mirroring Phase 0's own methodology and the plan's
+explicit instruction for this phase: four new hand-assembled bytecode
+tests in `tests/test_vm_core.py` (no compiler involved) proving the exact
+dynamic-scoping patterns a real compiler would need — reading an outer
+frame's variable through two nested calls, a bare dynamic store mutating
+an outer frame's binding in place (STEPS' "leak" pattern), a declared name
+shadowing without leaking back — all before writing STEPS compiler code.
+
+**A genuinely pleasant surprise once that fix landed**: NucleusVM's
+existing `LOAD_NAME`/`STORE_NAME_DECL`/`STORE_NAME_DYNAMIC` semantics —
+designed in Phase 0 from written research, never exercised by a real
+compiler — matched STEPS' actual `Scope.get`/`declare_variable`/bare-`set`
+behavior almost exactly, with zero redesign needed. Better still, STEPS
+turned out to need *less* compiler machinery than FragBASIC, not more:
+its arithmetic is strictly numeric (no polymorphic `+` — text concat is
+a separate `added to` operator), comparisons already return a plain
+Python-compatible bool (not FragBASIC's `-1`/`0` convention), and `and`/
+`or`/`not` are eager with truthiness matching Python's own `bool(x)`
+exactly — so almost every operator compiles to a raw NucleusVM opcode
+directly, no `CALL_NATIVE` wrapper at all (unlike FragBASIC, where that
+wrapping was the whole first-pass performance problem). STEPS statement
+bodies are also genuinely nested (real child-list AST fields), unlike
+FragBASIC's flat sibling-scanned FOR/NEXT — no structural pairing pass
+needed either. Net effect: the STEPS compiler slice
+(`STEPS/src/steps/vm_compiler/{compiler.py,natives.py}`, new files only,
+on branch `feature/nucleus-vm-compiler`) is architecturally simpler than
+FragBASIC's despite STEPS itself having a much larger AST (~50 dataclass
+node types vs. a handful of `NodeType` values).
+
+**Two real design decisions, not obvious in advance**:
+- Top-level `building.body` needs an active call frame too —
+  `LOAD_NAME`/`STORE_NAME_DYNAMIC` both require one, but `VM.run()` starts
+  with `self.frame = None`. STEPS has no "globals" tier distinct from its
+  root `Scope` — top level is just the outermost link in the same dynamic
+  chain a step call extends. Fixed by compiling the whole program so the
+  first instruction is a zero-arg `CALL` to the building's own body (ending
+  in `RETURN`), giving it a real frame before any dynamic-scope opcode runs.
+- `environment.steps` (populated by the existing, untouched `Loader`)
+  holds the *entire* loaded stdlib, not just what a given program actually
+  uses — compiling all of it unconditionally both wastes work and fails
+  outright the moment any unreachable stdlib step touches an unsupported
+  construct (hit immediately on the very first test: an unrelated stdlib
+  step used `split by`, which wasn't even in scope yet, and broke
+  compilation of a program that never called it). Fixed with reachability-
+  driven, on-demand compilation: a worklist seeded by `building.body`,
+  growing as `CallStatement`s to not-yet-compiled steps are discovered
+  during compilation, draining until empty — only what's actually
+  reachable ever gets compiled.
+
+**Scope, set by real corpus usage** (100-problem STEPS Euler corpus,
+corrected from an earlier "104" estimate): `repeat while` is the
+overwhelmingly dominant loop (99/100 problems, 530 occurrences) and needs
+no scope push at all — `if`/`otherwise`/`otherwise if`; `exit`; `return`;
+`call` for steps/risers/the 11 actually-used builtins (of 56 registered —
+`create_list`/`characters`/`slice`/`sqrt`/`index_of`/`read_file`/
+`replace`/`list_sum`/`sqr`/`pow`/`log10`/`log`); lists (literals,
+indexing, `add`/`remove`); arithmetic/comparison/boolean operators; `as
+number`/`as text`/`as boolean` (647 combined occurrences — higher than
+any registry builtin); `length of` (180); `added to`; `split by` (13),
+`character at` (20), `contains`/`is in` (1/3) — added once corpus grep
+showed real usage, on top of the pre-planned scope; display — all in.
+**Explicitly deferred, each with the evidence behind it**: `attempt`/
+`unsuccessful` (0 corpus usage, plus needs a real exception-unwind design
+this VM has no primitive for); tables (0 usage); `repeat for each` (1
+use — needs a lightweight non-`CALL` scope-push primitive that doesn't
+exist yet, a real design question worth its own checkpoint); `repeat <N>
+times` (3 uses); `fixed` type-locking (0 *real* usage — the only 8 corpus
+hits are the English word inside `note:` comments, confirmed by reading
+every occurrence); the 45 unused builtins; the REPL (`steps_repl` keeps
+one live `Environment` across an unbounded number of future input chunks —
+a fundamentally different, not-yet-compilable model, unrelated to this
+slice's scope).
+
+**Verified**: `problem_01` matched on the very first end-to-end run — no
+iteration needed, a strong signal the dynamic-scoping architecture was
+right from the start (unlike FragBASIC's session, which caught a real
+symbol-resolution bug on its first recursive-SUB test). Full 100-problem
+corpus sweep (12s/problem/engine budget, same methodology already proven
+for FragBASIC): **55 `MATCH`, 0 `DIFFER`**, 1 `VM_FAIL` (`problem_22`,
+the deliberately-deferred `repeat for each` — expected, not a bug), 44
+`TREE_FAIL` (exceeded the budget under the tree-walker too — heavy
+problems, not VM-specific, same pattern as FragBASIC's own sweep). Zero
+correctness divergences found anywhere. 13 new tests in STEPS' own
+`tests/unit/test_vm_compiler.py` (mirroring FragBASIC's `test_vm_compiler.py`
+style) cover this slice's constructs directly, including — deliberately,
+as the single most important test this phase produces — a step whose bare
+`set` mutates a variable that only exists in its *caller's* scope,
+confirmed byte-identical against the tree-walker, not just at the raw
+opcode level. All 450 of STEPS' own tests (437 existing + 13 new) and all
+12 of NucleusVM's own tests pass throughout.
+
+**Next concrete task**: same shape as FragBASIC's own next step — either
+extend `PROJECT_EULER/euler_benchmark.py`'s dual-run mode to also cover
+STEPS' 44 slow problems for a real patient confirmation, or keep widening
+coverage (`repeat for each`'s lightweight scope-push design is the most
+architecturally interesting remaining gap — likely wants its own
+checkpoint rather than folding in casually). No STEPS performance
+measurement has been done yet — worth doing once coverage is wide enough
+to be representative, the same way FragBASIC's initial "is this actually
+faster" question turned out to matter more than assumed.
+
 ## Decision log
 
 - **2026-08-17**: named "NucleusVM" (owner's choice); located at
