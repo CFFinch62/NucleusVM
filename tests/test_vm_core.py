@@ -168,3 +168,51 @@ def test_undefined_global_raises():
 
     with pytest.raises(NucleusRuntimeError):
         VM().run(chunk)
+
+
+def test_to_int_truncates_toward_zero():
+    chunk = Chunk("to_int")
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(-3.9))
+    chunk.emit(Op.TO_INT)
+    chunk.emit(Op.HALT)
+
+    result = VM().run(chunk)
+    assert result == -3
+    assert type(result) is int
+
+
+def test_logical_and_or_are_eager_and_return_bool():
+    """LOGICAL_AND/OR combine two already-evaluated operands' truthiness —
+    distinct from JUMP_IF_*_OR_POP's short-circuit and/or, which never
+    evaluates the second operand at all when the first already decides
+    the result. Both operands here are unconditionally on the stack
+    before the opcode runs, by construction."""
+    for op, a, b, expected in [
+        (Op.LOGICAL_AND, 1, 1, True),
+        (Op.LOGICAL_AND, 1, 0, False),
+        (Op.LOGICAL_AND, 0, 0, False),
+        (Op.LOGICAL_OR, 0, 0, False),
+        (Op.LOGICAL_OR, 1, 0, True),
+        (Op.LOGICAL_OR, 0, 1, True),
+    ]:
+        chunk = Chunk("logical")
+        chunk.emit(Op.LOAD_CONST, chunk.add_constant(a))
+        chunk.emit(Op.LOAD_CONST, chunk.add_constant(b))
+        chunk.emit(op)
+        chunk.emit(Op.HALT)
+        result = VM().run(chunk)
+        assert result is expected, f"{op.name}({a}, {b})"
+
+
+def test_logical_and_result_converts_to_basic_style_minus_one_zero():
+    """A consuming language whose truthy/falsy convention is -1/0 rather
+    than Python bool (e.g. classic BASIC) converts LOGICAL_AND/OR's bool
+    result with a plain UNARY_NEG — -True == -1, -False == 0."""
+    chunk = Chunk("logical_to_basic")
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(1))
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(1))
+    chunk.emit(Op.LOGICAL_AND)
+    chunk.emit(Op.UNARY_NEG)
+    chunk.emit(Op.HALT)
+
+    assert VM().run(chunk) == -1

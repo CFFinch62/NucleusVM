@@ -253,6 +253,53 @@ premise was working). The `IntEnum` + dispatch-reorder fixes are core VM
 changes, so **STEPS inherits both of these for free** whenever Phase 2
 starts — they aren't FragBASIC-specific work that would need repeating.
 
+## Status: closed the MOD/\/AND/OR native-call gap, 2026-08-18 (same day, later still)
+
+The previous status update flagged one remaining known gap: `MOD`/`\`
+(truncate-both-operands-first) and `AND`/`OR` (must stay eager — no
+short-circuit) still routed through `CALL_NATIVE`, and closing it would
+need new shared VM opcodes. Asked to close it, so: two new opcodes added
+to `opcodes.py`/`vm.py` (both dispatch-table-eligible, no `ip` handling
+needed) and documented in `dev-docs/DESIGN.md`'s opcode table:
+
+- **`TO_INT`**: `int(x)` — a generic cast opcode, not BASIC-specific
+  (plenty of languages have C-style truncating integer division). Lets
+  `\`/`MOD` compile as `TO_INT`, `TO_INT`, raw `BINARY_IDIV`/`BINARY_MOD`
+  instead of a native wrapper — the zero-check ("division by zero") was
+  already built into those raw opcodes, so nothing was lost by dropping
+  the native.
+- **`LOGICAL_AND`/`LOGICAL_OR`**: eager (non-short-circuit) truthiness
+  combination of two *already-evaluated* operands, returning a Python
+  `bool` — explicitly distinct from the short-circuit and/or
+  `JUMP_IF_*_OR_POP` already provides (which never evaluates the second
+  operand at all). A consuming language needing BASIC's `-1`/`0`
+  convention converts the result itself: `UNARY_NEG` on a bool already
+  gives exactly `-1`/`0` for free (`-True == -1`), no third opcode needed.
+
+Checked real usage before deciding what to fix: `AND` (53 files), `OR`
+(21), `MOD` (50), `\` (63) vs. `XOR`/`EQV`/`IMP` combined in 1 file — so
+those three stayed on the `CALL_NATIVE` path (`natives.py`'s now-dead
+`_idiv`/`_mod`/`_logical_and`/`_logical_or`/`_logical_not` were deleted,
+not left as unreachable code). In FragBASIC's compiler,
+`_compile_condition` (added last pass for comparisons used only as branch
+tests) now also compiles `AND`/`OR`/`NOT` via the raw opcodes when only
+truthiness is needed, with `_compile_expr`'s general-value-context path
+using the same raw opcodes plus a trailing `UNARY_NEG` when the exact
+`-1`/`0` is actually observable (stored, printed, or otherwise escapes).
+
+**Result**: loop benchmark 15.46s → **14.63s** (a further ~5%, on top of
+the previous pass's much larger dispatch-loop fix — now **47% faster**
+than the tree-walker's 27.77s, up from 42%). `fib(24)` essentially
+unchanged (0.89s → 0.96s, within noise — expected, that benchmark barely
+uses `MOD`/`AND`/`OR`). Directly verified the trickiest case by hand
+(`AND`/`OR`/`NOT` used as a stored/printed *value*, not just a branch
+condition, including the classic `total = total + (x > 5)` arithmetic
+idiom) — byte-identical against the tree-walker. Full 100-solution corpus
+re-swept a third time: **56 `MATCH`, 0 `DIFFER`, 0 `VM_FAIL`** — identical
+to the post-dispatch-fix sweep, confirming zero regressions from this
+change too. New unit tests for `TO_INT`/`LOGICAL_AND`/`LOGICAL_OR` in
+NucleusVM's own `tests/test_vm_core.py` (9 tests now, up from 6).
+
 **Next concrete task**: of the 100 solutions, only the 44 slow ones remain
 genuinely unverified (everything that completes within a reasonable budget
 now matches). Either extend `PROJECT_EULER/euler_benchmark.py` with the
@@ -264,15 +311,11 @@ requested for completeness; same for `INPUT`. `GOSUB`/`RETURN` still needs
 the shared-VM-opcode work (`JUMP_SUB`/`RETURN_SUB` — jump-and-remember-
 return-address *without* swapping to a new call frame, since `GOSUB`
 shares its caller's exact variable scope) whenever it's picked up; still 0
-corpus usage so it's not gating anything. Worth profiling again once more
-of the corpus is exercised — the `CALL_NATIVE` cost for `MOD`/`\`
-(truncate-both-operands-first) and `AND`/`OR` (must stay eager, no
-short-circuit — FragBASIC's `visit_and`/`visit_or` always evaluate both
-sides, unlike Python's `and`/`or`) is still real and didn't get a targeted
-fix this pass; closing that gap would likely need new shared VM opcodes
-(a BASIC-flavored eager logical-AND/OR primitive), which is a bigger,
-separate design decision worth its own checkpoint rather than folding in
-here.
+corpus usage so it's not gating anything. No other known performance gaps
+flagged as of this update — `+`/`^`/`XOR`/`EQV`/`IMP` remain on
+`CALL_NATIVE` but are all either genuinely polymorphic (`+`) or rare
+enough in the corpus (the rest) that a dedicated opcode isn't obviously
+justified without more profiling evidence than exists yet.
 
 ## Decision log
 

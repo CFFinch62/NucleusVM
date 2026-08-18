@@ -107,6 +107,9 @@ class VM:
             Op.BINARY_POW: self._op_binary_pow,
             Op.UNARY_NEG: self._op_unary_neg,
             Op.UNARY_NOT: self._op_unary_not,
+            Op.TO_INT: self._op_to_int,
+            Op.LOGICAL_AND: self._op_logical_and,
+            Op.LOGICAL_OR: self._op_logical_or,
             Op.COMPARE_EQ: self._op_compare_eq,
             Op.COMPARE_NE: self._op_compare_ne,
             Op.COMPARE_LT: self._op_compare_lt,
@@ -362,6 +365,28 @@ class VM:
 
     def _op_unary_not(self, arg: Any) -> None:
         self.stack.append(not self._truthy(self.stack.pop()))
+
+    def _op_to_int(self, arg: Any) -> None:
+        self.stack.append(int(self.stack.pop()))
+
+    def _op_logical_and(self, arg: Any) -> None:
+        """Eager (non-short-circuit) logical AND — distinct from
+        JUMP_IF_FALSE_OR_POP's short-circuit AND. Both operands are
+        expected to already be on the stack (the compiler decides whether
+        evaluating both unconditionally matters for its language, e.g.
+        FragBASIC's AND/OR always do); this only combines their
+        truthiness. Result is a Python bool — a consuming language whose
+        boolean convention differs (e.g. BASIC-style -1/0) converts it
+        itself (UNARY_NEG on a bool already gives exactly -1/0)."""
+        b = self.stack.pop()
+        a = self.stack.pop()
+        self.stack.append(self._truthy(a) and self._truthy(b))
+
+    def _op_logical_or(self, arg: Any) -> None:
+        """Eager (non-short-circuit) logical OR — see _op_logical_and."""
+        b = self.stack.pop()
+        a = self.stack.pop()
+        self.stack.append(self._truthy(a) or self._truthy(b))
 
     def _op_compare_eq(self, arg: Any) -> None:
         b = self.stack.pop()

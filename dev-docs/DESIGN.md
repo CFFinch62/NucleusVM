@@ -54,6 +54,8 @@ table; NucleusVM never needs to know what's in it.
 | `STORE_NAME_DYNAMIC` | name | `v →` | walk `parent` chain looking for an existing binding to mutate; create in current frame only if none found anywhere up the chain |
 | `BINARY_ADD` / `SUB` / `MUL` / `DIV` / `IDIV` / `MOD` / `POW` | — | `a, b → r` | |
 | `UNARY_NEG` / `UNARY_NOT` | — | `a → r` | |
+| `TO_INT` | — | `a → r` | `int(a)`; a generic cast, added for languages whose integer division/modulo truncate operands before dividing (raw Python `//`/`%` don't) — compile `int(a) // int(b)` from `TO_INT`+`TO_INT`+`BINARY_IDIV` rather than a language-specific native |
+| `LOGICAL_AND` / `LOGICAL_OR` | — | `a, b → bool` | eager (non-short-circuit) truthiness combination of two *already-evaluated* operands — distinct from `JUMP_IF_*_OR_POP`'s short-circuit and/or, which never evaluates the second operand at all; for a language whose truthy/falsy convention isn't Python `bool` (e.g. classic BASIC's `-1`/`0`), follow with `UNARY_NEG` (`-True == -1`, `-False == 0`) |
 | `COMPARE_EQ` / `NE` / `LT` / `LE` / `GT` / `GE` | — | `a, b → bool` | |
 | `JUMP` | addr | — | unconditional |
 | `JUMP_IF_FALSE` / `JUMP_IF_TRUE` | addr | `v →` | pops, conditional |

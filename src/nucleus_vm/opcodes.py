@@ -32,6 +32,9 @@ class Op(IntEnum):
     BINARY_POW = auto()
     UNARY_NEG = auto()
     UNARY_NOT = auto()
+    TO_INT = auto()
+    LOGICAL_AND = auto()
+    LOGICAL_OR = auto()
 
     # Comparison
     COMPARE_EQ = auto()
