@@ -437,6 +437,36 @@ measurement has been done yet — worth doing once coverage is wide enough
 to be representative, the same way FragBASIC's initial "is this actually
 faster" question turned out to matter more than assumed.
 
+## Status: STEPS performance measured, 2026-08-18 (same day, still)
+
+Same two benchmark shapes used for FragBASIC, for a direct comparison:
+
+| Workload | tree-walker | VM |
+|---|---|---|
+| Recursive `fib(24)`, call-heavy | 4.04s | **1.29s — 3.1x faster** |
+| 2M-iteration `repeat while` loop, `modulo`/comparisons, loop-heavy | 22.92s | **12.44s — 46% faster** |
+
+Unlike FragBASIC, this worked well **on the first pass** — no separate
+optimization investigation was needed. Profiling confirmed why: this
+slice's arithmetic/comparisons/booleans already compile to raw NucleusVM
+opcodes with no `CALL_NATIVE` wrapper at all (see the compiler's own
+status entry above — STEPS needed *less* compiler machinery than
+FragBASIC, not more), so it never had FragBASIC's original problem
+(native-call overhead dominating hot loops). It also inherits the
+`IntEnum`/dispatch-loop-reorder core fixes from FragBASIC's investigation
+for free, as expected going in.
+
+One further attempt, reported honestly as a negative result rather than
+omitted: profiling flagged `_op_load_name` doing two dict lookups per
+frame level (`if arg in node.locals: node.locals[arg]`) where a
+try/except would do one. Rewrote it, reran the loop benchmark three times
+— no measurable change (12.27s → 12.30s, within noise). For top-level
+code the lookup already succeeds on the very first try either way, so
+there was no real redundant-lookup cost to remove in this benchmark's
+shape. Reverted rather than keep the added complexity unjustified; worth
+revisiting if a future benchmark actually exercises deep dynamic-scope
+chains where the miss-then-walk path is hot.
+
 ## Decision log
 
 - **2026-08-17**: named "NucleusVM" (owner's choice); located at
