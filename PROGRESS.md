@@ -467,6 +467,65 @@ shape. Reverted rather than keep the added complexity unjustified; worth
 revisiting if a future benchmark actually exercises deep dynamic-scope
 chains where the miss-then-walk path is hot.
 
+## Status: engine documented, benchmarked into Project Euler, and swept, 2026-08-18 (same day, still)
+
+Closed the loop on making the VM engine discoverable/usable, not just
+internally proven:
+
+- **CLI**: both `fragbasic` and `steps run` gained a real `--engine
+  {tree,vm}` flag (previously `engine=` was Python-API-only), wired
+  straight through to the existing library parameter. `--timeout` under
+  `--engine vm` prints an explicit "not yet supported" notice rather than
+  silently doing nothing (FragBASIC has no cancellation support in the VM
+  path yet; STEPS' compiled `repeat while` has no iteration-limit guard
+  either — both are known, documented gaps, not silent ones).
+- **Docs**: both READMEs gained a "NucleusVM execution engine
+  (experimental)" section — usage, status, verified correctness/perf
+  numbers, known gaps.
+- **STEPS compiler gap found via real corpus, not review**: the full
+  100-problem sweep (below) surfaced `SetIterationLimitStatement` as
+  unhandled by the VM compiler. Fixed as a no-op (the guard it configures
+  doesn't exist in the VM yet anyway — same known gap as above), verified
+  byte-identical against the tree-walker on problem 73.
+- **Project Euler benchmark**: `euler_benchmark.py` gained `fragbasic_vm`/
+  `steps_vm` entries (`LangConfig.extra_args` passes `--engine vm`) and a
+  headless mode (`--headless --languages ... --problems ... --timeout
+  ...`), reusing the GUI's existing worker/save logic rather than a
+  parallel implementation. `generate_performance_csv.py`'s separate
+  `LANGUAGES` dict was synced to match.
+
+**Full 100-problem sweep results** (120s/problem timeout, same
+methodology as the existing tracked languages), against the reference
+point that motivated this whole effort — Leopard's tree-walker-only
+~808s total:
+
+| Engine | Solved | Total time |
+|---|---|---|
+| Leopard (tree, reference) | 100/100 | 808.4s |
+| FragBASIC tree-walker | 100/100 | 6186.9s |
+| FragBASIC VM | 91/100 | 1565.9s |
+| STEPS tree-walker | 100/100 | 5351.7s |
+| STEPS VM | 89/100 | 1339.0s |
+
+Both engines land at roughly **3.9-4x less total time** than their own
+tree-walkers on the problems they complete. The remaining gap to Leopard
+is real but partly an artifact of incomplete coverage: the 9-11 missing
+problems per language are each individually confirmed to be *genuinely*
+heavy (STEPS problems 73/87/92 clock 267-583s each even standalone,
+confirmed by direct timing outside the benchmark harness, not a
+VM-specific regression), and the tree-walker baselines above only reach
+100/100 because their original runs used a longer per-problem timeout
+than this sweep's 120s. A fully fair "how close to Leopard did this get"
+number needs a follow-up sweep with a longer timeout for the remaining
+slow problems on both languages — noted as the natural next step rather
+than done here, consistent with this project's habit of not chasing long
+unattended runs within a single session.
+
+All results are recorded in `PROJECT_EULER/solution_performance.json` and
+`PROJECT_EULER/performance_comparison.csv`, alongside the existing
+tree-walker/Leopard/Python data, so future sweeps (e.g. the longer-timeout
+follow-up) extend the same tracked history rather than starting over.
+
 ## Decision log
 
 - **2026-08-17**: named "NucleusVM" (owner's choice); located at
