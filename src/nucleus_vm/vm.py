@@ -73,10 +73,19 @@ class VM:
         # through this dispatch table (dict-keyed on the Op enum member —
         # the same "cache the handler, don't re-derive it per instruction"
         # fix already proven necessary in every one of the tree-walkers
-        # this VM replaces). Opcodes that need to move `ip` itself (jumps,
-        # CALL/RETURN, HALT, SAFETY_TICK, BEGIN/END_ATTEMPT) are handled
+        # this VM replaces; Op is an IntEnum specifically so this lookup
+        # hashes as a plain int rather than paying Enum's slower default
+        # __hash__ — measured as the single largest chunk of run()'s own
+        # overhead on a comparison/arithmetic-heavy loop before this
+        # change). Opcodes that need to move `ip` itself (jumps, CALL/
+        # RETURN, HALT, SAFETY_TICK, BEGIN/END_ATTEMPT) are handled
         # directly in run()'s loop instead, since a handler called through
-        # this table has no way to affect the caller's `ip` variable.
+        # this table has no way to affect the caller's `ip` variable —
+        # run() tries this dict first and only falls through to that
+        # explicit if-chain on a miss, since the dict covers the large
+        # majority of opcodes in any real program and an IntEnum-keyed
+        # dict lookup beats paying up to ~10 sequential equality checks on
+        # every single instruction regardless of which kind it is.
         self._dispatch: dict[Op, Callable[[Any], None]] = {
             Op.LOAD_CONST: self._op_load_const,
             Op.POP_TOP: self._op_pop_top,
@@ -136,6 +145,29 @@ class VM:
             op = instr.op
             arg = instr.arg
             ip += 1
+
+            # Try the dict-dispatched majority (loads/stores/arithmetic/
+            # comparisons/CALL_NATIVE/...) first — with Op as an IntEnum
+            # this is a single cheap int-hash dict lookup, and it covers
+            # most instructions in any real program. The chain of ip-
+            # affecting ops below (jumps, CALL/RETURN, HALT, ...) is the
+            # minority by instruction count even though it's frequently
+            # *taken* in a loop-heavy program, so checking it second
+            # (only on a dispatch miss) beats paying ~10 sequential
+            # equality checks on every single instruction regardless of
+            # which kind it is.
+            handler = dispatch.get(op)
+            if handler is not None:
+                try:
+                    handler(arg)
+                except NucleusRuntimeError:
+                    if self._attempt_stack:
+                        handler_ip, stack_depth = self._attempt_stack.pop()
+                        del self.stack[stack_depth:]
+                        ip = handler_ip
+                        continue
+                    raise
+                continue
 
             if op == Op.JUMP:
                 ip = arg
@@ -203,18 +235,7 @@ class VM:
             if op == Op.HALT:
                 return self.stack.pop() if self.stack else None
 
-            handler = dispatch.get(op)
-            if handler is None:
-                raise NucleusRuntimeError(f"unknown opcode {op!r} at ip={ip - 1}")
-            try:
-                handler(arg)
-            except NucleusRuntimeError:
-                if self._attempt_stack:
-                    handler_ip, stack_depth = self._attempt_stack.pop()
-                    del self.stack[stack_depth:]
-                    ip = handler_ip
-                    continue
-                raise
+            raise NucleusRuntimeError(f"unknown opcode {op!r} at ip={ip - 1}")
 
     @staticmethod
     def _truthy(value: Any) -> bool:

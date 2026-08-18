@@ -167,6 +167,92 @@ real coverage gaps instead of guessing:
   `dev-docs/PLAN.md`'s verification strategy). **Zero correctness
   divergences found anywhere in the corpus this pass.**
 
+## Status: performance investigation and fix, 2026-08-18 (same day, later still)
+
+**The owner's actual goal for this whole project is performance — FragBASIC
+is explicitly the least important of the languages this VM is for and was
+called out as disposable if it doesn't deliver real gains.** Prompted by a
+direct question ("did this help performance by any real measure?"), this
+pass actually measured instead of assuming, found the honest answer was
+briefly **no**, then fixed the real, root cause — a change to the shared
+VM core, not just the FragBASIC compiler, so it benefits every future
+consuming language (STEPS included), not just this one.
+
+**First measurement (before this pass's fixes) — mixed, and net negative
+for the common case**:
+- Recursive `fib(24)` (~150k calls, call-heavy): VM already **34% faster**
+  (2.10s vs tree's 3.18s) — the call-frame/no-Python-recursion win was
+  real from the start.
+- Tight arithmetic/comparison loop, 2M iterations, no calls (far more
+  representative of what a Project Euler solution actually looks like):
+  VM was **60% slower** (42.57s vs tree's 26.62s).
+- Scaled `pe87.bas` (arrays + recursion + comparisons): VM slower
+  (4.25s vs tree's 3.46s).
+
+**Root-caused via `cProfile`, not guessing**: two real, separate causes,
+found by profiling the loop case directly.
+1. **Compiler-level**: FragBASIC's classic-BASIC `-1`/`0` comparison/
+   logical-op convention (not Python `True`/`False`) was routed through
+   `CALL_NATIVE` *unconditionally*, even when a comparison only ever fed a
+   branch condition — the overwhelmingly common case. Fixed:
+   `compiler.py`'s new `_compile_condition` compiles a comparison used
+   only for its truthiness (an `IF`/`WHILE` condition, or nested inside
+   `AND`/`OR`/`NOT`) via NucleusVM's raw `COMPARE_*` opcodes instead —
+   safe because `JUMP_IF_FALSE`/`AND`/`OR`/`NOT`'s own truthiness test
+   (`bool(x)`/`_to_single(x) != 0`) agrees for a Python bool or a BASIC
+   -1/0 alike; the exact `-1`/`0` representation is only materialized when
+   a comparison's result is actually stored, printed, or otherwise
+   escapes as a real value. Also resolved a FOR loop's `STEP` sign at
+   compile time when it's a literal (or the default, implicit `+1`) rather
+   than calling a native `_for_should_exit` helper every single iteration
+   — covers the large majority of real loops. **Impact alone: modest**
+   (42.57s → 39.22s, ~8%) — not the main story.
+2. **Shared VM core**: profiling showed `vm.py`'s own dispatch loop was
+   **38% of total runtime** on its own, dominant over every native call
+   combined. Two compounding causes, both fixed in `vm.py`/`opcodes.py`:
+   - `Op` was a plain `Enum` — hashing an Enum member (needed for every
+     single `dispatch.get(op)` dict lookup) measurably costs more than
+     hashing a plain int in CPython. Changed to `IntEnum` (5.96M `__hash__`
+     calls on a 300k-iteration profiled run *disappeared* from the
+     profile entirely). Alone: loop 39.22s → 31.92s; `fib(24)` 2.10s →
+     1.63s.
+   - `run()`'s main loop checked ~10 sequential `if op == Op.X` cases for
+     ip-affecting instructions (jumps, `CALL`/`RETURN`, `HALT`, ...)
+     *before* falling through to the dict dispatch — so every single
+     instruction paid that cost regardless of which kind it was, even
+     though the dict-dispatched family (loads/stores/arithmetic/
+     comparisons/`CALL_NATIVE`/...) is the large majority of instructions
+     in any real program. Reordered: try the dict first (now a cheap
+     int-hash lookup thanks to the `IntEnum` change), fall through to the
+     ip-affecting if-chain only on a miss. Verified no opcode is covered
+     by both paths or by neither (`set` check against all `Op` members).
+     Alone (combined with the `IntEnum` change already in place): loop
+     31.92s → **15.46s**; `fib(24)` 1.63s → **0.89s**.
+
+**Final numbers, same benchmarks, tree-walker unchanged throughout**:
+
+| Workload | tree-walker | VM (before this pass) | VM (after) |
+|---|---|---|---|
+| `fib(24)`, call-heavy | 3.30s | 2.10s (34% faster) | **0.89s (3.7x faster)** |
+| 2M-iteration arithmetic/comparison loop | 26.89s | 42.57s (60% slower) | **15.46s (42% faster)** |
+
+**Correctness re-verified after the core VM surgery** (this touched
+`vm.py`'s hot dispatch loop, not just the FragBASIC compiler, so this
+mattered more than usual): full 100-solution corpus sweep re-run —
+**56 `MATCH`, 0 `DIFFER`, 0 `VM_FAIL`** (even better than the pre-surgery
+sweep, since the earlier run's 4 stale `DATA`-related failures are now
+gone too). All 60 of FragBASIC's own tests and all 6 of NucleusVM's own
+tests still pass.
+
+**Bottom line for the owner's actual question**: yes, NucleusVM now
+delivers real, measured, verified performance gains on both the call-heavy
+and loop-heavy shapes of code Project Euler solutions actually take — but
+only after this profiling pass; the first, uninvestigated answer would
+have been the wrong one to act on (or to report as evidence the project's
+premise was working). The `IntEnum` + dispatch-reorder fixes are core VM
+changes, so **STEPS inherits both of these for free** whenever Phase 2
+starts — they aren't FragBASIC-specific work that would need repeating.
+
 **Next concrete task**: of the 100 solutions, only the 44 slow ones remain
 genuinely unverified (everything that completes within a reasonable budget
 now matches). Either extend `PROJECT_EULER/euler_benchmark.py` with the
@@ -178,7 +264,15 @@ requested for completeness; same for `INPUT`. `GOSUB`/`RETURN` still needs
 the shared-VM-opcode work (`JUMP_SUB`/`RETURN_SUB` — jump-and-remember-
 return-address *without* swapping to a new call frame, since `GOSUB`
 shares its caller's exact variable scope) whenever it's picked up; still 0
-corpus usage so it's not gating anything.
+corpus usage so it's not gating anything. Worth profiling again once more
+of the corpus is exercised — the `CALL_NATIVE` cost for `MOD`/`\`
+(truncate-both-operands-first) and `AND`/`OR` (must stay eager, no
+short-circuit — FragBASIC's `visit_and`/`visit_or` always evaluate both
+sides, unlike Python's `and`/`or`) is still real and didn't get a targeted
+fix this pass; closing that gap would likely need new shared VM opcodes
+(a BASIC-flavored eager logical-AND/OR primitive), which is a bigger,
+separate design decision worth its own checkpoint rather than folding in
+here.
 
 ## Decision log
 

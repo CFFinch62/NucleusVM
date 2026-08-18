@@ -3,10 +3,10 @@
 See dev-docs/DESIGN.md for the full opcode table and the reasoning behind
 each one. This module only defines the enum — behavior lives in vm.py.
 """
-from enum import Enum, auto
+from enum import IntEnum, auto
 
 
-class Op(Enum):
+class Op(IntEnum):
     # Stack hygiene
     LOAD_CONST = auto()
     POP_TOP = auto()
