@@ -213,7 +213,16 @@ class VM:
                     args = []
                 new_frame = Frame(
                     locals={i: v for i, v in enumerate(args)},
-                    parent=None,
+                    # Parents the new frame on the *caller's* current frame
+                    # (dynamic re-parenting per call, not per definition
+                    # site) — this is what makes LOAD_NAME/STORE_NAME_DYNAMIC
+                    # walk a real, call-chain-shaped scope for a language
+                    # that needs one (e.g. STEPS). Harmless for a language
+                    # whose compiler never emits those opcodes (e.g.
+                    # FragBASIC): LOAD_FAST/STORE_FAST/LOAD_GLOBAL/
+                    # STORE_GLOBAL never read `.parent`, so this is a
+                    # zero-behavior-change field for them either way.
+                    parent=self.frame,
                     caller=self.frame,
                     return_ip=ip,
                 )

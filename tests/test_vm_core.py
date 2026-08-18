@@ -216,3 +216,116 @@ def test_logical_and_result_converts_to_basic_style_minus_one_zero():
     chunk.emit(Op.HALT)
 
     assert VM().run(chunk) == -1
+
+
+# ----------------------------------------------------------------------
+# Phase 2 de-risking: CALL's new frame must parent on the *caller's*
+# current frame (dynamic re-parenting per call), not always None, or
+# LOAD_NAME/STORE_NAME_DYNAMIC have no real chain to walk across a call
+# boundary at all — the exact scoping model a dynamically-scoped language
+# (e.g. STEPS) needs for nearly all its variable access. These hand-
+# assemble the same three patterns Phase 0 validated resolved-scope
+# opcodes with, before any STEPS compiler exists to exercise them for
+# real. See dev-docs/PLAN.md's Phase 2 section for why this had to be
+# checked directly rather than assumed from the opcode's original design.
+# ----------------------------------------------------------------------
+
+def test_nested_call_reads_outer_frames_variable_via_load_name():
+    """Two levels deep: `inner`'s frame parents on `middle`'s, which
+    parents on `main`'s — LOAD_NAME in `inner` must walk both hops to
+    reach a variable only `main` ever declared.
+
+    `main` itself is entered via a bootstrap CALL rather than running
+    inline at ip 0 — LOAD_NAME/STORE_NAME_DECL both require an active
+    frame (`_require_frame`), and `run()` starts with `self.frame = None`,
+    so top-level code needs the same "wrap it in its own call" treatment
+    a real compiler for a dynamically-scoped language gives its program's
+    top level (see dev-docs/PLAN.md's Phase 2 section)."""
+    chunk = Chunk("dynamic_scope_read")
+
+    call_main = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.HALT)
+
+    main_start = chunk.here()
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(7.0))
+    chunk.emit(Op.STORE_NAME_DECL, "z")
+    call_middle = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.RETURN)
+
+    middle_start = chunk.here()
+    call_inner = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.RETURN)  # passes inner's return value through unchanged
+
+    inner_start = chunk.here()
+    chunk.emit(Op.LOAD_NAME, "z")  # not in inner's or middle's own locals
+    chunk.emit(Op.RETURN)
+
+    chunk.patch_arg(call_main, (main_start, 0))
+    chunk.patch_arg(call_middle, (middle_start, 0))
+    chunk.patch_arg(call_inner, (inner_start, 0))
+
+    assert VM().run(chunk) == 7.0
+
+
+def test_bare_dynamic_store_mutates_outer_frames_binding():
+    """The classic STEPS "leak" pattern: a bare `set` on a name that
+    already exists in an *enclosing* call's frame mutates it there,
+    in place, rather than creating a new local — exactly
+    STORE_NAME_DYNAMIC's contract, now proven across a real CALL
+    boundary instead of only within a single hand-built frame."""
+    chunk = Chunk("dynamic_scope_leak")
+
+    call_main = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.HALT)
+
+    main_start = chunk.here()
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(10.0))
+    chunk.emit(Op.STORE_NAME_DECL, "x")
+    call_inner = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.POP_TOP)  # discard inner's return value
+    chunk.emit(Op.LOAD_NAME, "x")  # read back x from main's own frame
+    chunk.emit(Op.RETURN)
+
+    inner_start = chunk.here()
+    chunk.emit(Op.LOAD_NAME, "x")  # walks to main's frame: 10.0
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(5.0))
+    chunk.emit(Op.BINARY_ADD)
+    chunk.emit(Op.STORE_NAME_DYNAMIC, "x")  # not local -> mutates main's x
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(0.0))
+    chunk.emit(Op.RETURN)
+
+    chunk.patch_arg(call_main, (main_start, 0))
+    chunk.patch_arg(call_inner, (inner_start, 0))
+
+    assert VM().run(chunk) == 15.0
+
+
+def test_declared_name_shadows_without_leaking_back():
+    """The complementary case: STORE_NAME_DECL always binds in the
+    *current* frame with no chain walk, even when a same-named binding
+    already exists in an enclosing frame — it must shadow, not mutate,
+    and the shadow must vanish (not leak back) once that frame's call
+    returns."""
+    chunk = Chunk("dynamic_scope_shadow")
+
+    call_main = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.HALT)
+
+    main_start = chunk.here()
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(99.0))
+    chunk.emit(Op.STORE_NAME_DECL, "y")
+    call_inner = chunk.emit(Op.CALL, None)
+    chunk.emit(Op.POP_TOP)  # discard inner's return value
+    chunk.emit(Op.LOAD_NAME, "y")  # main's own y, untouched by inner
+    chunk.emit(Op.RETURN)
+
+    inner_start = chunk.here()
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(999.0))
+    chunk.emit(Op.STORE_NAME_DECL, "y")  # shadows in inner's own frame only
+    chunk.emit(Op.LOAD_CONST, chunk.add_constant(0.0))
+    chunk.emit(Op.RETURN)
+
+    chunk.patch_arg(call_main, (main_start, 0))
+    chunk.patch_arg(call_inner, (inner_start, 0))
+
+    assert VM().run(chunk) == 99.0
