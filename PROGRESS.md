@@ -121,13 +121,64 @@ aren't persisted in-repo).
    the 100 actually compile (many still hit the `NotImplementedError`s
    above).
 
-**Next concrete task**: investigate the sweep hang noted above, then keep
-widening the compiler's coverage (`SELECT CASE`, `DO`/`LOOP`, remaining
-builtins, `DATA`/`READ`/`INPUT`) against real failures from a fuller corpus
-sweep, and/or build the `GOSUB`/`RETURN` shared-VM-opcode work (`JUMP_SUB`/
-`RETURN_SUB` — jump-and-remember-return-address *without* swapping to a new
-call frame, since `GOSUB` shares its caller's exact variable scope) once
-enough of the rest is stable.
+## Status: widening Phase 1 slice coverage, 2026-08-18 (later same day)
+
+Picked back up per the "next concrete task" above. The earlier sweep-hang
+concern was fully explained (multi-second-to-multi-minute problems, not a
+bug — see above), so this pass went straight to a properly-paced sweep
+(12s/file, real OS-level `timeout` per subprocess rather than
+`signal.alarm`, which is what made the first attempt unreliable) to find
+real coverage gaps instead of guessing:
+
+- **Builtin usage re-survey** (the first session's grep undercounted —
+  case-sensitive pattern missed lowercase source and required a directly-
+  following paren): `INT` (114 uses), `VAL` (81), `LEN` (68), `STR$` (67),
+  `MID$` (43), `CHR$` (36), `ASC` (20), `SQR` (9) were already covered.
+  **New real gaps found**: `FIX` (9 uses), `SGN` (4), `STRING$` (2) —
+  added to `natives.py`/`compiler.py`'s `BUILTIN_ARITY`, ported 1:1 from
+  `interpreter_functions.py`'s `FIX`/`SGN`/`STRING$` branches.
+- **`DATA`/`READ`/`RESTORE`** — the sweep's actual headline finding: 17 of
+  the 100 solutions use `DATA`, 16 use `READ` (`INPUT` is still genuinely
+  unused, 0 solutions). This was wrongly bucketed with `SELECT CASE`/
+  `DO`/`LOOP` as "0 usage, skip" in the first session because the original
+  corpus grep only checked for those three specific keywords, not
+  `DATA`/`READ` separately. Implemented as a compile-time-folded constant
+  pool (`compiler.py`'s `_fold_data_value`, mirroring
+  `collect_definitions`'s exact DATA-collection scope: top-level only, not
+  reachable from inside a SUB/FUNCTION body, same as the tree-walker) plus
+  a runtime cursor (`\0data_pool`/`\0data_index` synthetic VM globals,
+  `_read_next` native). `symbols.py` also needed a matching fix — `READ`
+  targets inside a SUB/FUNCTION body are call-local exactly like
+  `VAR_ASSIGN` targets are (same class of bug as the `merge_sort` one
+  above, fixed proactively this time instead of by a failing test).
+- **Verified**: all 4 of the DATA-using solutions checked directly
+  (`pe11`, `pe13`, `pe18`, `pe22`) are byte-identical between engines. 4
+  new targeted tests for `FIX`/`SGN`/`STRING$` and `DATA`/`READ`/`RESTORE`
+  (including a negative-number `DATA` literal and an array `READ` target)
+  — 25 of `test_vm_compiler.py`'s tests pass, 56 total in FragBASIC's
+  suite.
+- **Full-corpus sweep: complete.** 12s/file/engine budget, all 100
+  solutions: **52 `MATCH`, 0 `DIFFER`**, 4 `VM_FAIL` (all stale —
+  `pe11`/`pe13`/`pe18`/`pe22`, logged before the `DATA` fix landed mid-sweep;
+  already independently re-verified passing, see above), 44 `TREE_FAIL`
+  (exceeded the 12s budget under the tree-walker too — heavy problems, not
+  a VM-specific slowdown; PROJECT_EULER's own euler_benchmark.py, not this
+  ad hoc script, is the right tool for a patient confirming run per
+  `dev-docs/PLAN.md`'s verification strategy). **Zero correctness
+  divergences found anywhere in the corpus this pass.**
+
+**Next concrete task**: of the 100 solutions, only the 44 slow ones remain
+genuinely unverified (everything that completes within a reasonable budget
+now matches). Either extend `PROJECT_EULER/euler_benchmark.py` with the
+dual-run mode `dev-docs/PLAN.md` describes and let it run those 44
+unattended for real confirmation, or keep widening coverage first.
+`SELECT CASE` and `DO`/`LOOP` are confirmed genuinely unused by all 100
+solutions (real corpus grep, not assumption) so they're low priority unless
+requested for completeness; same for `INPUT`. `GOSUB`/`RETURN` still needs
+the shared-VM-opcode work (`JUMP_SUB`/`RETURN_SUB` — jump-and-remember-
+return-address *without* swapping to a new call frame, since `GOSUB`
+shares its caller's exact variable scope) whenever it's picked up; still 0
+corpus usage so it's not gating anything.
 
 ## Decision log
 
