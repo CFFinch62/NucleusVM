@@ -9,7 +9,7 @@
 
 A shared, generic bytecode virtual machine core, written in Python, meant
 to be reused as the execution engine for multiple Python-hosted teaching
-languages ([STEPS](https://github.com/CFFinch62/Steps), FragBASIC, and
+languages ([STEPS](https://github.com/CFFinch62/STEPS), FragBASIC, and
 potentially others later) instead of each language maintaining its own
 separate tree-walking interpreter.
 
